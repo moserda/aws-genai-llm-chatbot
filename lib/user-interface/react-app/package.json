@@ -27,7 +27,7 @@
     "react-textarea-autosize": "^8.5.3",
     "react-use-websocket": "^4.5.0",
     "regenerator-runtime": "^0.14.0",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
     "@types/luxon": "^3.3.2",

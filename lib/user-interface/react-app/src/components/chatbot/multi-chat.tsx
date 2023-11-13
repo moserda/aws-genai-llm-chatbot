@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useState } from "react";
+import {useContext, useEffect, useLayoutEffect, useRef, useState} from "react";
 import {
   SelectProps,
   SpaceBetween,
@@ -14,9 +14,10 @@ import { AppContext } from "../../common/app-context";
 import { ApiClient } from "../../common/api-client/api-client";
 import ChatMessage from "./chat-message";
 import MultiChatInputPanel, { ChatScrollState } from "./multi-chat-input-panel";
-import useWebSocket, { ReadyState } from "react-use-websocket";
+import { ReadyState } from "react-use-websocket";
 import { OptionsHelper } from "../../common/helpers/options-helper";
-import { Auth } from "aws-amplify";
+import {API, Auth, graphqlOperation, Hub} from "aws-amplify";
+import {CONNECTION_STATE_CHANGE, ConnectionState} from '@aws-amplify/pubsub';
 import {
   ChatBotConfiguration,
   ChatBotAction,
@@ -27,8 +28,6 @@ import {
   ChatBotMode,
   ChabotInputModality,
   ChabotOutputModality,
-  ChatBotHeartbeatRequest,
-  ChatBotModelInterface,
 } from "./types";
 import {
   ApiResult,
@@ -37,10 +36,11 @@ import {
   ResultValue,
   LoadingStatus,
 } from "../../common/types";
-import { getSelectedModelMetadata, updateChatSessions } from "./utils";
+import {getSelectedModelMetadata, updateChatSessions} from "./utils";
 import LLMConfigDialog from "./llm-config-dialog";
 import styles from "../../styles/chat.module.scss";
 import { useNavigate } from "react-router-dom";
+import * as Observable from "zen-observable";
 
 export interface ChatSession {
   configuration: ChatBotConfiguration;
@@ -83,10 +83,37 @@ const workspaceDefaultOptions: SelectProps.Option[] = [
   },
 ];
 
+
+interface ReceivedMessage {
+  onMessage: {
+    userId: string;
+    connectionId: string;
+    body: string;
+  }
+}
+
+const receiveMessageSubscription =  /* GraphQL */`
+    subscription onMessage($userId: String!, $connectionId: String!) {
+        onMessage(userId: $userId, connectionId: $connectionId) {
+            userId
+            body
+        }
+    }
+`
+
+const sendMessageMutation =  /* GraphQL */`
+    mutation sendMessage($body: String!, $connectionId: String!) {
+        sendMessage(body: $body, connectionId: $connectionId)
+    }
+`
+
+function sendJsonMessage(message: unknown, clientId: string) {
+  API.graphql(graphqlOperation(sendMessageMutation, {connectionId: clientId, body: JSON.stringify(message)}));
+}
+
 export default function MultiChat() {
   const navigate = useNavigate();
   const appContext = useContext(AppContext);
-  const [socketUrl, setSocketUrl] = useState<string | null>(null);
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [models, setModels] = useState<ModelItem[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
@@ -98,30 +125,32 @@ export default function MultiChat() {
     undefined
   );
   const [showMetadata, setShowMetadata] = useState(false);
-  const { sendJsonMessage, readyState } = useWebSocket(socketUrl, {
-    share: true,
-    shouldReconnect: () => true,
-    onOpen: () => {
-      const request: ChatBotHeartbeatRequest = {
-        action: ChatBotAction.Heartbeat,
-        modelInterface: ChatBotModelInterface.Langchain,
-      };
 
-      sendJsonMessage(request);
-    },
-    onMessage: (payload) => {
-      const response: ChatBotMessageResponse = JSON.parse(payload.data);
-      if (response.action === ChatBotAction.Heartbeat) {
-        return;
-      }
-      const sessionId = response.data.sessionId;
-      const session = chatSessions.filter((c) => c.id === sessionId)[0];
-      if (session !== undefined) {
-        updateChatSessions(session, response);
-        setChatSessions([...chatSessions]);
-      }
-    },
-  });
+  const [readyState, setReadyState] = useState(ReadyState.CONNECTING)
+  const [subscriptionHandle, setSubscriptionHandle] = useState<ZenObservable.Subscription>();
+  const [clientId] = useState(uuidv4())
+  const onMessageHandlerRef = useRef<(message: string) => void>()
+  console.log(clientId)
+
+  function onMessageHandler(message: string) {
+    const response: ChatBotMessageResponse = JSON.parse(message);
+    if (response.action === ChatBotAction.Heartbeat) {
+      return;
+    }
+    const sessionId = response.data.sessionId;
+    const session = chatSessions.filter((c) => c.id === sessionId)[0];
+    if (session !== undefined) {
+      updateChatSessions(session, response);
+      setChatSessions([...chatSessions]);
+    }
+  }
+
+  onMessageHandlerRef.current = onMessageHandler
+
+  useEffect(() => {
+    if (!subscriptionHandle) return;
+    return () => subscriptionHandle.unsubscribe();
+  }, [appContext, subscriptionHandle]);
 
   useEffect(() => {
     if (!appContext) return;
@@ -138,12 +167,47 @@ export default function MultiChat() {
           : Promise.resolve<ApiResult<WorkspaceItem[]>>({ ok: true, data: [] }),
       ]);
 
+
+      // eslint-disable-next-line
+      Hub.listen('api', (data: any) => {
+        const {payload} = data;
+        if (payload.event === CONNECTION_STATE_CHANGE) {
+          const connectionState = payload.data.connectionState as ConnectionState;
+          switch (connectionState) {
+            case ConnectionState.Connected:
+              setReadyState(ReadyState.OPEN);
+              break;
+            case ConnectionState.Disconnected:
+              setReadyState(ReadyState.CLOSED);
+              break;
+            case ConnectionState.Connecting:
+              setReadyState(ReadyState.CONNECTING);
+              break;
+            default:
+              setReadyState(ReadyState.CLOSED);
+              break;
+          }
+          console.log(connectionState);
+        }
+      });
+
       const jwtToken = session.getAccessToken().getJwtToken();
 
       if (jwtToken) {
-        setSocketUrl(
-          `${appContext.config.websocket_endpoint}?token=${jwtToken}`
-        );
+
+        const username = session.getIdToken().decodePayload()["cognito:username"]
+        const client = API.graphql(graphqlOperation(receiveMessageSubscription, {userId: username, connectionId: clientId})) as unknown as Observable<object>
+        const graphqlSubscriptionHandle = client.subscribe({
+            next: (payload: { value: { data: ReceivedMessage } }) => {
+              onMessageHandlerRef.current!(payload.value.data.onMessage.body)
+            },
+            error: errorValue => {
+              console.warn(errorValue)
+            }
+          }
+        )
+
+        setSubscriptionHandle(graphqlSubscriptionHandle);
       }
 
       const models = ResultValue.ok(modelsResult)
@@ -224,7 +288,7 @@ export default function MultiChat() {
       ];
 
       setChatSessions([...chatSessions]);
-      sendJsonMessage(request);
+      sendJsonMessage(request, clientId);
     });
   };
 

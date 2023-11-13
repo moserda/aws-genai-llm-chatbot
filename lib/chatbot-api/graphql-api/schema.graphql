@@ -1,0 +1,27 @@
+type Message @aws_cognito_user_pools @aws_iam {
+    userId: String
+    connectionId: String
+    body: String
+}
+
+
+type Mutation {
+    sendMessageToClient(userId: String!, connectionId: String! body: String!): Message
+    @aws_iam
+    sendMessage(body: String!, connectionId: String!): Boolean
+}
+
+type Query {
+    dummy(dummyArg: String): Boolean
+}
+
+type Subscription {
+    onMessage(userId: String!, connectionId: String!): Message
+    @aws_subscribe(mutations: ["sendMessageToClient"])
+}
+
+schema {
+    query: Query
+    mutation: Mutation
+    subscription: Subscription
+}

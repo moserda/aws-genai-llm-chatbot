@@ -25,7 +25,7 @@ export default function AppConfigured() {
   useEffect(() => {
     (async () => {
       try {
-        const result = await fetch("/aws-exports.json");
+        const result = await fetch("./aws-exports.json");
         const awsExports = await result.json();
         const currentConfig = Amplify.configure(awsExports) as AppConfig | null;
 

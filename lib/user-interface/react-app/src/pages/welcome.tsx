@@ -94,7 +94,7 @@ export default function Welcome() {
                   external: true,
                   type: "AWS Fully Managed",
                   href: "https://aws.amazon.com/bedrock/",
-                  img: "/images/welcome/amazon-bedrock.png",
+                  img: "images/welcome/amazon-bedrock.png",
                   description:
                     "Amazon Bedrock is a fully managed service that makes foundation models (FMs) from Amazon and leading AI startups available through an API.",
                 },
@@ -103,7 +103,7 @@ export default function Welcome() {
                   external: true,
                   type: "AWS Self hosted",
                   href: "https://aws.amazon.com/sagemaker/",
-                  img: "/images/welcome/self-hosted.jpg",
+                  img: "images/welcome/self-hosted.jpg",
                   description:
                     "CDK construct to deploy and run self hosted models on Amazon SageMaker. Deploy pre-trained models from SageMaker Foundation/Jumpstart and HuggingFace.",
                 },
@@ -111,7 +111,7 @@ export default function Welcome() {
                   name: "3P Models",
                   type: "External API",
                   href: "#",
-                  img: "/images/welcome/3p.png",
+                  img: "images/welcome/3p.png",
                   description:
                     "Interface with 3rd party models via provided API. Such as AI21 Labs, OpenAI, HuggingFace Interface Endpoints etc.",
                 },
@@ -120,7 +120,7 @@ export default function Welcome() {
             <Container
               media={{
                 content: (
-                  <img src="/images/welcome/ui-dark.png" alt="placeholder" />
+                  <img src="images/welcome/ui-dark.png" alt="placeholder" />
                 ),
                 width: 300,
                 position: "side",

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Outlet } from "react-router-dom";
+import {HashRouter, Outlet, Route, Routes} from "react-router-dom";
 import GlobalHeader from "./components/global-header";
 import Dashboard from "./pages/rag/dashboard/dashboard";
 import NotFound from "./pages/not-found";
@@ -18,34 +18,34 @@ import MultiChatPlayground from "./pages/chatbot/playground/multi-chat-playgroun
 
 function App() {
   return (
-    <div style={{ height: "100%" }}>
-      <BrowserRouter>
-        <GlobalHeader />
-        <div style={{ height: "56px", backgroundColor: "#000716" }}>&nbsp;</div>
+    <div style={{height: "100%"}}>
+      <HashRouter>
+        <GlobalHeader/>
+        <div style={{height: "56px", backgroundColor: "#000716"}}>&nbsp;</div>
         <div>
           <Routes>
-            <Route index path="/" element={<Welcome />} />
-            <Route path="/chatbot" element={<Outlet />}>
-              <Route path="playground" element={<Playground />} />
-              <Route path="playground/:sessionId" element={<Playground />} />
-              <Route path="multichat" element={<MultiChatPlayground />} />
-              <Route path="models" element={<Models />} />
+            <Route index path="/" element={<Welcome/>}/>
+            <Route path="/chatbot" element={<Outlet/>}>
+              <Route path="playground" element={<Playground/>}/>
+              <Route path="playground/:sessionId" element={<Playground/>}/>
+              <Route path="multichat" element={<MultiChatPlayground/>}/>
+              <Route path="models" element={<Models/>}/>
             </Route>
-            <Route path="/rag" element={<Outlet />}>
-              <Route path="" element={<Dashboard />} />
-              <Route path="engines" element={<Engines />} />
-              <Route path="embeddings" element={<Embeddings />} />
-              <Route path="cross-encoders" element={<CrossEncoders />} />
-              <Route path="semantic-search" element={<SemanticSearch />} />
-              <Route path="workspaces" element={<Workspaces />} />
-              <Route path="workspaces/create" element={<CreateWorkspace />} />
-              <Route path="workspaces/:workspaceId" element={<Workspace />} />
-              <Route path="workspaces/add-data" element={<AddData />} />
+            <Route path="/rag" element={<Outlet/>}>
+              <Route path="" element={<Dashboard/>}/>
+              <Route path="engines" element={<Engines/>}/>
+              <Route path="embeddings" element={<Embeddings/>}/>
+              <Route path="cross-encoders" element={<CrossEncoders/>}/>
+              <Route path="semantic-search" element={<SemanticSearch/>}/>
+              <Route path="workspaces" element={<Workspaces/>}/>
+              <Route path="workspaces/create" element={<CreateWorkspace/>}/>
+              <Route path="workspaces/:workspaceId" element={<Workspace/>}/>
+              <Route path="workspaces/add-data" element={<AddData/>}/>
             </Route>
-            <Route path="*" element={<NotFound />} />
+            <Route path="*" element={<NotFound/>}/>
           </Routes>
         </div>
-      </BrowserRouter>
+      </HashRouter>
     </div>
   );
 }

@@ -7,6 +7,7 @@ const isDev = process.env.NODE_ENV === "development";
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  base: process.env.BASE ? `/${process.env.BASE}/`: '/',
   define: {
     "process.env": {},
   },

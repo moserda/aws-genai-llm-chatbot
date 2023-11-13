@@ -31,7 +31,7 @@ logger = Logger()
 cors_config = CORSConfig(allow_origin="*", max_age=0)
 app = APIGatewayRestResolver(
     cors=cors_config,
-    strip_prefixes=["/v1"],
+    strip_prefixes=["/api/v1"],
     serializer=lambda obj: json.dumps(obj, cls=genai_core.utils.json.CustomEncoder),
 )
 
@@ -93,8 +93,5 @@ def handle_value_error(e: ValidationError):
 )
 @tracer.capture_lambda_handler
 def handler(event: dict, context: LambdaContext) -> dict:
-    origin_verify_header_value = genai_core.parameters.get_origin_verify_header_value()
-    if event["headers"]["X-Origin-Verify"] == origin_verify_header_value:
-        return app.resolve(event, context)
+    return app.resolve(event, context)
 
-    return {"statusCode": 403, "body": "Forbidden"}

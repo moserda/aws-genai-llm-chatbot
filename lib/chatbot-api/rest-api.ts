@@ -26,6 +26,7 @@ export interface RestApiProps {
 
 export class RestApi extends Construct {
   public readonly api: apigateway.RestApi;
+  public readonly apiStageName: string;
 
   constructor(scope: Construct, id: string, props: RestApiProps) {
     super(scope, id);
@@ -237,7 +238,6 @@ export class RestApi extends Construct {
       })
     );
 
-    props.shared.xOriginVerifySecret.grantRead(apiHandler);
     props.shared.apiKeysSecret.grantRead(apiHandler);
     props.shared.configParameter.grantRead(apiHandler);
     props.modelsParameter.grantRead(apiHandler);
@@ -268,23 +268,59 @@ export class RestApi extends Construct {
       }
     }
 
+    // Create VPC Endpoint for Api Gateway
+    const apigatewayVpcEndpoint = props.shared.vpc.addInterfaceEndpoint("ApiGatewayEndpoint", {
+      service: ec2.InterfaceVpcEndpointAwsService.APIGATEWAY,
+      privateDnsEnabled: true,
+      open: true,
+    });
+
+    const stageName = "chatbot"
     const chatBotApi = new apigateway.RestApi(this, "ChatBotApi", {
-      endpointTypes: [apigateway.EndpointType.REGIONAL],
+      endpointTypes: [apigateway.EndpointType.PRIVATE],
       cloudWatchRole: true,
+      binaryMediaTypes: ["image/*", "text/html", "application/xhtml+xml", "application/xml"],
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
         allowMethods: apigateway.Cors.ALL_METHODS,
-        allowHeaders: ["Content-Type", "Authorization", "X-Amz-Date"],
+        allowHeaders: [
+          "Content-Type",
+          "Authorization",
+          "X-Amz-Date",
+          "Access-Control-Request-Headers",
+          "Access-Control-Request-Method",
+        ],
         maxAge: cdk.Duration.minutes(10),
       },
       deploy: true,
       deployOptions: {
-        stageName: "api",
+        stageName: stageName,
         loggingLevel: apigateway.MethodLoggingLevel.INFO,
         tracingEnabled: true,
         metricsEnabled: true,
         throttlingRateLimit: 2500,
       },
+      policy: new iam.PolicyDocument({
+        statements: [
+          new iam.PolicyStatement({
+            principals: [new iam.AnyPrincipal],
+            actions: ['execute-api:Invoke'],
+            resources: ['execute-api:/*'],
+            effect: iam.Effect.DENY,
+            conditions: {
+              StringNotEquals: {
+                "aws:SourceVpce": apigatewayVpcEndpoint.vpcEndpointId
+              }
+            }
+          }),
+          new iam.PolicyStatement({
+            principals: [new iam.AnyPrincipal],
+            actions: ['execute-api:Invoke'],
+            resources: ['execute-api:/*'],
+            effect: iam.Effect.ALLOW
+          })
+        ]
+      })
     });
 
     const cognitoAuthorizer = new apigateway.CfnAuthorizer(
@@ -299,7 +335,7 @@ export class RestApi extends Construct {
       }
     );
 
-    const v1Resource = chatBotApi.root.addResource("v1", {
+    const v1Resource = chatBotApi.root.addResource("api").addResource("v1", {
       defaultMethodOptions: {
         authorizationType: apigateway.AuthorizationType.COGNITO,
         authorizer: { authorizerId: cognitoAuthorizer.ref },
@@ -314,5 +350,6 @@ export class RestApi extends Construct {
     );
 
     this.api = chatBotApi;
+    this.apiStageName = stageName;
   }
 }

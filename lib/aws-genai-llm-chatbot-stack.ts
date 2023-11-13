@@ -47,6 +47,7 @@ export class AwsGenAILLMChatbotStack extends cdk.Stack {
       config: props.config,
       ragEngines: ragEngines,
       userPool: authentication.userPool,
+      identityPool: authentication.identityPool,
       modelsParameter: models.modelsParameter,
       models: models.models,
     });
@@ -148,7 +149,7 @@ export class AwsGenAILLMChatbotStack extends cdk.Stack {
       userPoolId: authentication.userPool.userPoolId,
       userPoolClientId: authentication.userPoolClient.userPoolClientId,
       identityPool: authentication.identityPool,
-      restApi: chatBotApi.restApi,
+      chatbotApi: chatBotApi,
       webSocketApi: chatBotApi.webSocketApi,
       chatbotFilesBucket: chatBotApi.filesBucket,
       crossEncodersEnabled:

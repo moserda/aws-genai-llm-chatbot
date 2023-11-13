@@ -8,31 +8,17 @@ import {
   Spinner,
   StatusIndicator,
 } from "@cloudscape-design/components";
-import { Auth } from "aws-amplify";
-import {
-  Dispatch,
-  SetStateAction,
-  useContext,
-  useEffect,
-  useLayoutEffect,
-  useState,
-} from "react";
-import { useNavigate } from "react-router-dom";
-import SpeechRecognition, {
-  useSpeechRecognition,
-} from "react-speech-recognition";
+import {API, Auth, graphqlOperation, Hub} from "aws-amplify";
+import {Dispatch, SetStateAction, useContext, useEffect, useLayoutEffect, useRef, useState,} from "react";
+import {useNavigate} from "react-router-dom";
+import SpeechRecognition, {useSpeechRecognition,} from "react-speech-recognition";
 import TextareaAutosize from "react-textarea-autosize";
-import useWebSocket, { ReadyState } from "react-use-websocket";
-import { ApiClient } from "../../common/api-client/api-client";
-import { AppContext } from "../../common/app-context";
-import { OptionsHelper } from "../../common/helpers/options-helper";
-import { StorageHelper } from "../../common/helpers/storage-helper";
-import {
-  ApiResult,
-  ModelItem,
-  ResultValue,
-  WorkspaceItem,
-} from "../../common/types";
+import {ReadyState} from "react-use-websocket";
+import {ApiClient} from "../../common/api-client/api-client";
+import {AppContext} from "../../common/app-context";
+import {OptionsHelper} from "../../common/helpers/options-helper";
+import {StorageHelper} from "../../common/helpers/storage-helper";
+import {ApiResult, ModelItem, ResultValue, WorkspaceItem,} from "../../common/types";
 import styles from "../../styles/chat.module.scss";
 import ConfigDialog from "./config-dialog";
 import ImageDialog from "./image-dialog";
@@ -40,21 +26,18 @@ import {
   ChabotInputModality,
   ChatBotAction,
   ChatBotConfiguration,
-  ChatBotHeartbeatRequest,
   ChatBotHistoryItem,
   ChatBotMessageResponse,
   ChatBotMessageType,
   ChatBotMode,
-  ChatBotModelInterface,
   ChatBotRunRequest,
   ChatInputState,
   ImageFile,
 } from "./types";
-import {
-  getSelectedModelMetadata,
-  getSignedUrl,
-  updateMessageHistory,
-} from "./utils";
+import {getSelectedModelMetadata, getSignedUrl, updateMessageHistory,} from "./utils";
+import {CONNECTION_STATE_CHANGE, ConnectionState} from '@aws-amplify/pubsub';
+import * as Observable from "zen-observable";
+import {v4 as uuidv4} from 'uuid';
 
 export interface ChatInputPanelProps {
   running: boolean;
@@ -85,10 +68,37 @@ const workspaceDefaultOptions: SelectProps.Option[] = [
   },
 ];
 
+interface ReceivedMessage {
+  onMessage: {
+    userId: string;
+    connectionId: string;
+    body: string;
+  }
+}
+
+const receiveMessageSubscription =  /* GraphQL */`
+    subscription onMessage($userId: String!, $connectionId: String!) {
+        onMessage(userId: $userId, connectionId: $connectionId) {
+            userId
+            body
+        }
+    }
+`
+
+const sendMessageMutation =  /* GraphQL */`
+    mutation sendMessage($body: String!, $connectionId: String!) {
+        sendMessage(body: $body, connectionId: $connectionId)
+    }
+`
+
+function sendJsonMessage(message: unknown, clientId: string) {
+  API.graphql(graphqlOperation(sendMessageMutation, {connectionId: clientId, body: JSON.stringify(message)}));
+}
+
 export default function ChatInputPanel(props: ChatInputPanelProps) {
   const appContext = useContext(AppContext);
   const navigate = useNavigate();
-  const { transcript, listening, browserSupportsSpeechRecognition } =
+  const {transcript, listening, browserSupportsSpeechRecognition} =
     useSpeechRecognition();
   const [state, setState] = useState<ChatInputState>({
     value: "",
@@ -101,44 +111,40 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
   const [configDialogVisible, setConfigDialogVisible] = useState(false);
   const [imageDialogVisible, setImageDialogVisible] = useState(false);
   const [files, setFiles] = useState<ImageFile[]>([]);
-  const [socketUrl, setSocketUrl] = useState<string | null>(null);
-  const { sendJsonMessage, readyState } = useWebSocket(socketUrl, {
-    share: true,
-    shouldReconnect: () => true,
-    onOpen: () => {
-      const request: ChatBotHeartbeatRequest = {
-        action: ChatBotAction.Heartbeat,
-        modelInterface: ChatBotModelInterface.Langchain,
-      };
+  const [readyState, setReadyState] = useState(ReadyState.CONNECTING)
 
-      sendJsonMessage(request);
-    },
-    onMessage: (payload: { data: string }) => {
-      const response: ChatBotMessageResponse = JSON.parse(payload.data);
-      if (response.action === ChatBotAction.Heartbeat) {
-        return;
-      }
+  const [subscriptionHandle, setSubscriptionHandle] = useState<ZenObservable.Subscription>();
+  const [clientId] = useState(uuidv4())
+  const onMessageHandlerRef = useRef<(message: string) => void>()
+  console.log(clientId)
 
-      updateMessageHistory(
-        props.session.id,
-        props.messageHistory,
-        props.setMessageHistory,
-        response,
-        setState
-      );
+  function onMessageHandler(message: string) {
+    const response: ChatBotMessageResponse = JSON.parse(message);
+    if (response.action === ChatBotAction.Heartbeat) {
+      return;
+    }
 
-      if (
-        response.action === ChatBotAction.FinalResponse ||
-        response.action === ChatBotAction.Error
-      ) {
-        props.setRunning(false);
-      }
-    },
-  });
+    updateMessageHistory(
+      props.session.id,
+      props.messageHistory,
+      props.setMessageHistory,
+      response,
+      setState
+    );
+
+    if (
+      response.action === ChatBotAction.FinalResponse ||
+      response.action === ChatBotAction.Error
+    ) {
+      props.setRunning(false);
+    }
+  }
+
+  onMessageHandlerRef.current = onMessageHandler
 
   useEffect(() => {
     if (transcript) {
-      setState((state) => ({ ...state, value: transcript }));
+      setState((state) => ({...state, value: transcript}));
     }
   }, [transcript]);
 
@@ -153,17 +159,50 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
         appContext?.config.rag_enabled
           ? apiClient.workspaces.getWorkspaces()
           : Promise.resolve<ApiResult<WorkspaceItem[]>>({
-              ok: true,
-              data: [],
-            }),
+            ok: true,
+            data: [],
+          }),
       ]);
+      // eslint-disable-next-line
+      Hub.listen('api', (data: any) => {
+        const {payload} = data;
+        if (payload.event === CONNECTION_STATE_CHANGE) {
+          const connectionState = payload.data.connectionState as ConnectionState;
+          switch (connectionState) {
+            case ConnectionState.Connected:
+              setReadyState(ReadyState.OPEN);
+              break;
+            case ConnectionState.Disconnected:
+              setReadyState(ReadyState.CLOSED);
+              break;
+            case ConnectionState.Connecting:
+              setReadyState(ReadyState.CONNECTING);
+              break;
+            default:
+              setReadyState(ReadyState.CLOSED);
+              break;
+          }
+          console.log(connectionState);
+        }
+      });
 
       const jwtToken = session.getAccessToken().getJwtToken();
 
       if (jwtToken) {
-        setSocketUrl(
-          `${appContext.config.websocket_endpoint}?token=${jwtToken}`
-        );
+
+        const username = session.getIdToken().decodePayload()["cognito:username"]
+        const client = API.graphql(graphqlOperation(receiveMessageSubscription, {userId: username, connectionId: clientId})) as unknown as Observable<object>
+        const graphqlSubscriptionHandle = client.subscribe({
+            next: (payload: { value: { data: ReceivedMessage } }) => {
+              onMessageHandlerRef.current!(payload.value.data.onMessage.body)
+            },
+            error: errorValue => {
+              console.warn(errorValue)
+            }
+          }
+        )
+
+        setSubscriptionHandle(graphqlSubscriptionHandle);
       }
 
       const models = ResultValue.ok(modelsResult) ? modelsResult.data : [];
@@ -195,6 +234,12 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
     })();
   }, [appContext, state.modelsStatus]);
 
+
+  useEffect(() => {
+    if (!subscriptionHandle) return;
+    return () => subscriptionHandle.unsubscribe();
+  }, [appContext, subscriptionHandle]);
+
   useEffect(() => {
     const onWindowScroll = () => {
       if (ChatScrollState.skipNextScrollEvent) {
@@ -205,8 +250,8 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
       const isScrollToTheEnd =
         Math.abs(
           window.innerHeight +
-            window.scrollY -
-            document.documentElement.scrollHeight
+          window.scrollY -
+          document.documentElement.scrollHeight
         ) <= 10;
 
       if (!isScrollToTheEnd) {
@@ -265,7 +310,7 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
     if (readyState !== ReadyState.OPEN) return;
     ChatScrollState.userHasScrolled = false;
 
-    const { name, provider } = OptionsHelper.parseValue(
+    const {name, provider} = OptionsHelper.parseValue(
       state.selectedModel.value
     );
 
@@ -320,7 +365,7 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
       )
     );
 
-    return sendJsonMessage(request);
+    return sendJsonMessage(request, clientId);
   };
 
   const connectionStatus = {
@@ -354,7 +399,7 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
                 }
               />
             ) : (
-              <Icon name="microphone-off" variant="disabled" />
+              <Icon name="microphone-off" variant="disabled"/>
             )}
             {state.selectedModelMetadata?.inputModalities.includes(
               ChabotInputModality.Image
@@ -393,7 +438,7 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
             spellCheck={true}
             autoFocus
             onChange={(e) =>
-              setState((state) => ({ ...state, value: e.target.value }))
+              setState((state) => ({...state, value: e.target.value}))
             }
             onKeyDown={(e) => {
               if (e.key == "Enter" && !e.shiftKey) {
@@ -404,10 +449,10 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
             value={state.value}
             placeholder={listening ? "Listening..." : "Send a message"}
           />
-          <div style={{ marginLeft: "8px" }}>
+          <div style={{marginLeft: "8px"}}>
             {state.selectedModelMetadata?.inputModalities.includes(
-              ChabotInputModality.Image
-            ) &&
+                ChabotInputModality.Image
+              ) &&
               files.length > 0 &&
               files.map((file, idx) => (
                 <img
@@ -440,7 +485,7 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
               {props.running ? (
                 <>
                   Loading&nbsp;&nbsp;
-                  <Spinner />
+                  <Spinner/>
                 </>
               ) : (
                 "Send"
@@ -471,7 +516,7 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
             }
             filteringType="auto"
             selectedOption={state.selectedModel}
-            onChange={({ detail }) => {
+            onChange={({detail}) => {
               setState((state) => ({
                 ...state,
                 selectedModel: detail.selectedOption,
@@ -497,7 +542,7 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
               filteringType="auto"
               selectedOption={state.selectedWorkspace}
               options={workspaceOptions}
-              onChange={({ detail }) => {
+              onChange={({detail}) => {
                 if (detail.selectedOption?.value === "__create__") {
                   navigate("/rag/workspaces/create");
                 } else {
@@ -517,7 +562,7 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
         </div>
         <div className={styles.input_controls_right}>
           <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
-            <div style={{ paddingTop: "1px" }}>
+            <div style={{paddingTop: "1px"}}>
               <ConfigDialog
                 sessionId={props.session.id}
                 visible={configDialogVisible}
@@ -536,9 +581,9 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
                 readyState === ReadyState.OPEN
                   ? "success"
                   : readyState === ReadyState.CONNECTING ||
-                    readyState === ReadyState.UNINSTANTIATED
-                  ? "in-progress"
-                  : "error"
+                  readyState === ReadyState.UNINSTANTIATED
+                    ? "in-progress"
+                    : "error"
               }
             >
               {readyState === ReadyState.OPEN ? "Connected" : connectionStatus}

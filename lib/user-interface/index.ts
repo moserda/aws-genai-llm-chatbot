@@ -2,7 +2,7 @@ import * as apigwv2 from "@aws-cdk/aws-apigatewayv2-alpha";
 import * as cognitoIdentityPool from "@aws-cdk/aws-cognito-identitypool-alpha";
 import * as cdk from "aws-cdk-lib";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
-import * as cf from "aws-cdk-lib/aws-cloudfront";
+import * as appsync from "aws-cdk-lib/aws-appsync";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
@@ -15,6 +15,8 @@ import * as path from "node:path";
 import { Shared } from "../shared";
 import { SystemConfig } from "../shared/types";
 import { Utils } from "../shared/utils";
+import { ChatBotApi } from "../chatbot-api/index";
+import { Stack } from "aws-cdk-lib";
 
 export interface UserInterfaceProps {
   readonly config: SystemConfig;
@@ -22,8 +24,8 @@ export interface UserInterfaceProps {
   readonly userPoolId: string;
   readonly userPoolClientId: string;
   readonly identityPool: cognitoIdentityPool.IdentityPool;
-  readonly restApi: apigateway.RestApi;
-  readonly webSocketApi: apigwv2.WebSocketApi;
+  readonly chatbotApi: ChatBotApi;
+  readonly webSocketApi: appsync.GraphqlApi;
   readonly chatbotFilesBucket: s3.Bucket;
   readonly crossEncodersEnabled: boolean;
   readonly sagemakerEmbeddingsEnabled: boolean;
@@ -44,119 +46,114 @@ export class UserInterface extends Construct {
       websiteErrorDocument: "index.html",
     });
 
-    const originAccessIdentity = new cf.OriginAccessIdentity(this, "S3OAI");
-    websiteBucket.grantRead(originAccessIdentity);
-    props.chatbotFilesBucket.grantRead(originAccessIdentity);
+    const frontendApiS3IntegrationRole = new iam.Role(this, "ApiGatewayS3IntegrationRole", {
+      assumedBy: new iam.ServicePrincipal("apigateway.amazonaws.com")
+    })
+    frontendApiS3IntegrationRole.addToPolicy(new iam.PolicyStatement({
+      resources: [websiteBucket.bucketArn],
+      actions: ["s3:GetObject"]
+    }))
+    websiteBucket.grantRead(frontendApiS3IntegrationRole);
 
-    const distribution = new cf.CloudFrontWebDistribution(
-      this,
-      "Distirbution",
+    // Redirect / to /app/
+    props.chatbotApi.restApi.root.addMethod("GET", new apigateway.MockIntegration({
+      passthroughBehavior: apigateway.PassthroughBehavior.NEVER,
+      contentHandling: apigateway.ContentHandling.CONVERT_TO_TEXT,
+      requestTemplates: {
+        "application/json": "{\"statusCode\": 301}"
+      },
+      integrationResponses: [
+        {
+          statusCode: "301",
+          responseParameters: {
+            "method.response.header.Location": "'app/'"
+  }
+        }
+      ]
+    }), {
+      methodResponses: [
+        {
+          statusCode: "301",
+          responseParameters: {
+            "method.response.header.Location": true
+          }
+        }
+      ]
+    })
+    const appResource = props.chatbotApi.restApi.root.addResource("app")
+
+    // Serve index.html when /app/ is requested
+    appResource.addMethod("GET",
+      new apigateway.AwsIntegration({
+        service: "s3",
+        integrationHttpMethod: "GET",
+        path: `${websiteBucket.bucketName}/index.html`,
+        options: {
+          credentialsRole: frontendApiS3IntegrationRole,
+          integrationResponses: [
+            {
+              statusCode: "200",
+              responseParameters: {
+                "method.response.header.Content-Type": "integration.response.header.Content-Type",
+              }
+            }
+          ]
+        }
+      }),
       {
-        viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        priceClass: cf.PriceClass.PRICE_CLASS_ALL,
-        httpVersion: cf.HttpVersion.HTTP2_AND_3,
-        originConfigs: [
+        methodResponses: [
           {
-            behaviors: [{ isDefaultBehavior: true }],
-            s3OriginSource: {
-              s3BucketSource: websiteBucket,
-              originAccessIdentity,
-            },
-          },
-          {
-            behaviors: [
-              {
-                pathPattern: "/api/*",
-                allowedMethods: cf.CloudFrontAllowedMethods.ALL,
-                viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                defaultTtl: cdk.Duration.seconds(0),
-                forwardedValues: {
-                  queryString: true,
-                  headers: [
-                    "Referer",
-                    "Origin",
-                    "Authorization",
-                    "Content-Type",
-                    "x-forwarded-user",
-                    "Access-Control-Request-Headers",
-                    "Access-Control-Request-Method",
-                  ],
-                },
-              },
-            ],
-            customOriginSource: {
-              domainName: `${props.restApi.restApiId}.execute-api.${cdk.Aws.REGION}.${cdk.Aws.URL_SUFFIX}`,
-              originHeaders: {
-                "X-Origin-Verify": props.shared.xOriginVerifySecret
-                  .secretValueFromJson("headerValue")
-                  .unsafeUnwrap(),
-              },
-            },
-          },
-          {
-            behaviors: [
-              {
-                pathPattern: "/socket",
-                allowedMethods: cf.CloudFrontAllowedMethods.ALL,
-                viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                forwardedValues: {
-                  queryString: true,
-                  headers: [
-                    "Sec-WebSocket-Key",
-                    "Sec-WebSocket-Version",
-                    "Sec-WebSocket-Protocol",
-                    "Sec-WebSocket-Accept",
-                    "Sec-WebSocket-Extensions",
-                  ],
-                },
-              },
-            ],
-            customOriginSource: {
-              domainName: `${props.webSocketApi.apiId}.execute-api.${cdk.Aws.REGION}.${cdk.Aws.URL_SUFFIX}`,
-              originHeaders: {
-                "X-Origin-Verify": props.shared.xOriginVerifySecret
-                  .secretValueFromJson("headerValue")
-                  .unsafeUnwrap(),
-              },
-            },
-          },
-          {
-            behaviors: [
-              {
-                pathPattern: "/chabot/files/*",
-                allowedMethods: cf.CloudFrontAllowedMethods.ALL,
-                viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                defaultTtl: cdk.Duration.seconds(0),
-                forwardedValues: {
-                  queryString: true,
-                  headers: [
-                    "Referer",
-                    "Origin",
-                    "Authorization",
-                    "Content-Type",
-                    "x-forwarded-user",
-                    "Access-Control-Request-Headers",
-                    "Access-Control-Request-Method",
-                  ],
-                },
-              },
-            ],
-            s3OriginSource: {
-              s3BucketSource: props.chatbotFilesBucket,
-              originAccessIdentity,
+            statusCode: "200",
+            responseParameters: {
+              "method.response.header.Content-Type": true,
             },
           },
         ],
-        errorConfigurations: [
-          {
-            errorCode: 404,
-            errorCachingMinTtl: 0,
-            responseCode: 200,
-            responsePagePath: "/index.html",
-          },
-        ],
+        requestParameters: {
+          "method.request.path.key": true,
+          "method.request.header.Content-Type": true,
+        },
       }
-    );
+    )
+
+
+    appResource.addResource("{key+}")
+      .addMethod("GET",
+        new apigateway.AwsIntegration({
+          service: "s3",
+          integrationHttpMethod: "GET",
+          path: `${websiteBucket.bucketName}/{key}`,
+          options: {
+            credentialsRole: frontendApiS3IntegrationRole,
+            integrationResponses: [
+              {
+                statusCode: "200",
+                responseParameters: {
+                  "method.response.header.Content-Type": "integration.response.header.Content-Type",
+                }
+              }
+            ],
+            requestParameters: {
+              "integration.request.path.key": "method.request.path.key",
+            },
+          }
+        }),
+        {
+          methodResponses: [
+            {
+              statusCode: "200",
+              responseParameters: {
+                "method.response.header.Content-Type": true,
+              },
+            },
+          ],
+          requestParameters: {
+            "method.request.path.key": true,
+            "method.request.header.Content-Type": true,
+          },
+        }
+      )
+
 
     const exportsAsset = s3deploy.Source.jsonData("aws-exports.json", {
       aws_project_region: cdk.Aws.REGION,
@@ -164,6 +161,9 @@ export class UserInterface extends Construct {
       aws_user_pools_id: props.userPoolId,
       aws_user_pools_web_client_id: props.userPoolClientId,
       aws_cognito_identity_pool_id: props.identityPool.identityPoolId,
+      aws_appsync_graphqlEndpoint: props.webSocketApi.graphqlUrl,
+      aws_appsync_region: Stack.of(this).region,
+      aws_appsync_authenticationType: 'AMAZON_COGNITO_USER_POOLS',
       Storage: {
         AWSS3: {
           bucket: props.chatbotFilesBucket.bucketName,
@@ -171,8 +171,7 @@ export class UserInterface extends Construct {
         },
       },
       config: {
-        api_endpoint: `https://${distribution.distributionDomainName}/api`,
-        websocket_endpoint: `wss://${distribution.distributionDomainName}/socket`,
+        api_endpoint: `${props.chatbotApi.restApi.url}api`,
         rag_enabled: props.config.rag.enabled,
         cross_encoders_enabled: props.crossEncodersEnabled,
         sagemaker_embeddings_enabled: props.sagemakerEmbeddingsEnabled,
@@ -246,7 +245,7 @@ export class UserInterface extends Construct {
           "-c",
           [
             "npm --cache /tmp/.npm install",
-            `npm --cache /tmp/.npm run build`,
+            `BASE="${props.chatbotApi.restApiStageName}/app" npm --cache /tmp/.npm run build`,
             "cp -aur /asset-input/dist/* /asset-output/",
           ].join(" && "),
         ],
@@ -261,7 +260,7 @@ export class UserInterface extends Construct {
               };
 
               execSync(`npm --silent --prefix "${appPath}" ci`, options);
-              execSync(`npm --silent --prefix "${appPath}" run build`, options);
+              execSync(`BASE="${props.chatbotApi.restApiStageName}/app" npm --silent --prefix "${appPath}" run build`, options);
               Utils.copyDirRecursive(buildPath, outputDir);
             } catch (e) {
               console.error(e);
@@ -278,14 +277,6 @@ export class UserInterface extends Construct {
       prune: false,
       sources: [asset, exportsAsset],
       destinationBucket: websiteBucket,
-      distribution,
-    });
-
-    // ###################################################
-    // Outputs
-    // ###################################################
-    new cdk.CfnOutput(this, "UserInterfaceDomainName", {
-      value: `https://${distribution.distributionDomainName}`,
     });
   }
 }
